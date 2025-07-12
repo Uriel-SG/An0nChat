@@ -69,4 +69,4 @@ fi
 
 # 8. Avvio server Flask
 echo "🚀 Avvio An0nChat su 127.0.0.1:8080"
-python3 chat.py
+python3 anonchat.py
