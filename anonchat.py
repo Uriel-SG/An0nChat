@@ -2,6 +2,7 @@ from flask import Flask, render_template_string, request, jsonify, send_from_dir
 from werkzeug.utils import secure_filename
 from datetime import datetime
 import json
+import sqlite3
 import os
 import html
 
@@ -9,17 +10,56 @@ app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024  # 2MB limit
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf', 'txt'}
-CHAT_LOG = 'chat_log.json'
+
+DB_PATH = 'chat_log.db'
 MAX_MESSAGES = 5000
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# Load messages
-if os.path.exists(CHAT_LOG):
-    with open(CHAT_LOG, 'r', encoding='utf-8') as f:
-        messages = json.load(f)
-else:
-    messages = []
+# --- Database setup ---
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user TEXT NOT NULL,
+        text TEXT NOT NULL,
+        time TEXT NOT NULL
+    )''')
+    conn.commit()
+    conn.close()
+
+def get_messages(limit=100):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT user, text, time FROM messages ORDER BY id DESC LIMIT ?', (limit,))
+    rows = c.fetchall()
+    conn.close()
+    # restituisci in ordine cronologico
+    return [dict(user=row[0], text=row[1], time=row[2]) for row in reversed(rows)]
+
+def add_message(user, text, time):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('INSERT INTO messages (user, text, time) VALUES (?, ?, ?)', (user, text, time))
+    conn.commit()
+    # Limita il numero di messaggi
+    c.execute('SELECT COUNT(*) FROM messages')
+    count = c.fetchone()[0]
+    if count > MAX_MESSAGES:
+        # Elimina i messaggi più vecchi
+        c.execute('DELETE FROM messages WHERE id IN (SELECT id FROM messages ORDER BY id ASC LIMIT ?)', (count - MAX_MESSAGES,))
+        conn.commit()
+    conn.close()
+
+def clear_messages():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('DELETE FROM messages')
+    conn.commit()
+    conn.close()
+
+init_db()
 
 html_page = """
 <!doctype html>
@@ -314,10 +354,7 @@ def noscript():
         text = html.escape(request.form.get('text', ''))
         time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if text:
-            messages.append({"user": user, "text": text, "time": time})
-            if len(messages) > MAX_MESSAGES:
-                messages.pop(0)
-            save_messages()
+            add_message(user, text, time)
         return redirect(url_for('noscript'))
 
     form = """
@@ -327,7 +364,7 @@ def noscript():
       <button type="submit">Invia</button>
     </form>
     """
-    chat_html = "".join(f"<div><b>{html.escape(m['time'])} {html.escape(m['user'])}:</b> {html.escape(m['text'])}</div>" for m in messages[-50:])
+    chat_html = "".join(f"<div><b>{html.escape(m['time'])} {html.escape(m['user'])}:</b> {html.escape(m['text'])}</div>" for m in get_messages(50))
     return f"<html><body>{chat_html}{form}</body></html>"
 
 @app.route('/send', methods=['POST'])
@@ -336,21 +373,16 @@ def send():
     user = html.escape(data.get('user', 'Anon'))
     text = html.escape(data.get('text', ''))
     time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    messages.append({"user": user, "text": text, "time": time})
-    if len(messages) > MAX_MESSAGES:
-        messages.pop(0)
-    save_messages()
+    add_message(user, text, time)
     return '', 204
 
 @app.route('/messages')
-def get_messages():
-    return jsonify(messages=messages[-100:])
+def get_messages_route():
+    return jsonify(messages=get_messages(100))
 
 @app.route('/clear', methods=['POST'])
 def clear():
-    messages.clear()
-    if os.path.exists(CHAT_LOG):
-        os.remove(CHAT_LOG)
+    clear_messages()
     for f in os.listdir(app.config['UPLOAD_FOLDER']):
         os.remove(os.path.join(app.config['UPLOAD_FOLDER'], f))
     return '', 204
@@ -368,10 +400,7 @@ def upload_file():
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
         time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        messages.append({"user": user, "text": f"/file/{filename}", "time": time})
-        if len(messages) > MAX_MESSAGES:
-            messages.pop(0)
-        save_messages()
+        add_message(user, f"/file/{filename}", time)
         return '', 204
     return 'File type not allowed', 400
 
@@ -382,9 +411,7 @@ def uploaded_file(filename):
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def save_messages():
-    with open(CHAT_LOG, 'w', encoding='utf-8') as f:
-        json.dump(messages, f, indent=2, ensure_ascii=False)
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=False)
