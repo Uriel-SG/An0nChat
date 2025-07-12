@@ -12,7 +12,7 @@ app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024  # 2MB limit
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf', 'txt'}
 
 DB_PATH = 'chat_log.db'
-MAX_MESSAGES = 3000
+MAX_MESSAGES = 5000
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
