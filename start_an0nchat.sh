@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# Verifica se lo script è eseguito come root (es. tramite sudo)
+if [ "$EUID" -ne 0 ]; then
+  echo "❌ This script must be run as root! Try again using: sudo $0"
+  exit 1
+fi
+
 echo "🔐 Initial Check and Configuration..."
 
 TORRC_FILE="/etc/tor/torrc"
