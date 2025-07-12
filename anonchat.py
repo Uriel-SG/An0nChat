@@ -1,19 +1,22 @@
-from flask import Flask, render_template_string, request, jsonify, url_for, send_from_directory
+from flask import Flask, render_template_string, request, jsonify, send_from_directory, redirect, url_for
+from werkzeug.utils import secure_filename
 from datetime import datetime
 import json
 import os
-from werkzeug.utils import secure_filename
+import html
 
 app = Flask(__name__)
-CHAT_LOG = "chat_log.json"
-UPLOAD_FOLDER = "uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024  # 2MB limit
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf', 'txt'}
+CHAT_LOG = 'chat_log.json'
+MAX_MESSAGES = 5000
 
-# Carica messaggi da file all'avvio
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+# Load messages
 if os.path.exists(CHAT_LOG):
-    with open(CHAT_LOG, "r", encoding="utf-8") as f:
+    with open(CHAT_LOG, 'r', encoding='utf-8') as f:
         messages = json.load(f)
 else:
     messages = []
@@ -147,32 +150,31 @@ html_page = """
         }
         @media (max-width: 480px) {
             body {
-            padding: 10px;
+                padding: 10px;
+            }
+            .container {
+                padding: 15px;
+            }
+            #username {
+                width: 100% !important;
+                margin-bottom: 10px;
+            }
+            #inputRow {
+                flex-direction: column;
+            }
+            #message, #inputRow button {
+                width: 100%;
+                box-sizing: border-box;
+                margin-bottom: 10px;
+            }
+            #controls {
+                flex-direction: column;
+                gap: 10px;
+            }
+            #controls input[type="file"], #controls button {
+                width: 100%;
+            }
         }
-        .container {
-            padding: 15px;
-        }
-        #username {
-            width: 100% !important;
-            margin-bottom: 10px;
-        }
-        #inputRow {
-            flex-direction: column;
-        }
-        #message, #inputRow button {
-            width: 100%;
-            box-sizing: border-box;
-            margin-bottom: 10px;
-        }
-        #controls {
-            flex-direction: column;
-            gap: 10px;
-        }
-        #controls input[type="file"], #controls button {
-            width: 100%;
-        }
-    }
-
     </style>
 </head>
 <body>
@@ -201,6 +203,12 @@ html_page = """
         </div>
     </div>
 
+    <noscript>
+        <div class="container">
+            <p>This chat requires JavaScript to function fully.</p>
+        </div>
+    </noscript>
+
     <script>
         const usernameInput = document.getElementById('username');
         usernameInput.value = localStorage.getItem('username') || '';
@@ -216,7 +224,6 @@ html_page = """
                 .then(data => {
                     const chatbox = document.getElementById('chatbox');
                     if (data.messages.length > lastMsgCount) {
-                        document.getElementById("notifSound")?.play();
                         lastMsgCount = data.messages.length;
                     }
                     chatbox.innerHTML = data.messages.map(m => {
@@ -300,48 +307,73 @@ html_page = """
 def index():
     return render_template_string(html_page)
 
+@app.route('/noscript', methods=['GET', 'POST'])
+def noscript():
+    if request.method == 'POST':
+        user = html.escape(request.form.get('user', 'Anon'))
+        text = html.escape(request.form.get('text', ''))
+        time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if text:
+            messages.append({"user": user, "text": text, "time": time})
+            if len(messages) > MAX_MESSAGES:
+                messages.pop(0)
+            save_messages()
+        return redirect(url_for('noscript'))
+
+    form = """
+    <form method="POST">
+      <input name="user" placeholder="Nome">
+      <input name="text" placeholder="Messaggio">
+      <button type="submit">Invia</button>
+    </form>
+    """
+    chat_html = "".join(f"<div><b>{html.escape(m['time'])} {html.escape(m['user'])}:</b> {html.escape(m['text'])}</div>" for m in messages[-50:])
+    return f"<html><body>{chat_html}{form}</body></html>"
+
 @app.route('/send', methods=['POST'])
 def send():
     data = request.get_json()
+    user = html.escape(data.get('user', 'Anon'))
+    text = html.escape(data.get('text', ''))
     time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    messages.append({"user": data['user'], "text": data['text'], "time": time})
+    messages.append({"user": user, "text": text, "time": time})
+    if len(messages) > MAX_MESSAGES:
+        messages.pop(0)
     save_messages()
     return '', 204
 
 @app.route('/messages')
 def get_messages():
-    return jsonify(messages=messages)
+    return jsonify(messages=messages[-100:])
 
 @app.route('/clear', methods=['POST'])
 def clear():
     messages.clear()
     if os.path.exists(CHAT_LOG):
         os.remove(CHAT_LOG)
-    for f in os.listdir(UPLOAD_FOLDER):
-        os.remove(os.path.join(UPLOAD_FOLDER, f))
+    for f in os.listdir(app.config['UPLOAD_FOLDER']):
+        os.remove(os.path.join(app.config['UPLOAD_FOLDER'], f))
     return '', 204
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files:
-        return 'No file part in the request', 400
-
+        return 'No file part', 400
     file = request.files['file']
-    user = request.form.get('user', 'Anonymous')
-
+    user = html.escape(request.form.get('user', 'Anon'))
     if file.filename == '':
-        return 'No selected file', 400
-
-    if file and allowed_file(file.filename):
+        return 'No file selected', 400
+    if allowed_file(file.filename):
         filename = secure_filename(file.filename)
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(filepath)
         time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         messages.append({"user": user, "text": f"/file/{filename}", "time": time})
+        if len(messages) > MAX_MESSAGES:
+            messages.pop(0)
         save_messages()
         return '', 204
-    else:
-        return 'File type not allowed', 400
+    return 'File type not allowed', 400
 
 @app.route('/file/<filename>')
 def uploaded_file(filename):
@@ -351,8 +383,8 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def save_messages():
-    with open(CHAT_LOG, "w", encoding="utf-8") as f:
+    with open(CHAT_LOG, 'w', encoding='utf-8') as f:
         json.dump(messages, f, indent=2, ensure_ascii=False)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080, debug=True)
+    app.run(host='0.0.0.0', port=8080, debug=False)
